@@ -163,6 +163,12 @@ Teachers can create timed coding challenges and monitor student submissions in r
 
 ![CodePulse Challenges and Submissions](screenshots/challenges-submissions.png)
 
+### Student Coding Workspace
+
+Students receive the live teacher code in read-only mode, solve the active challenge in their own editor, and submit their solution before the timer expires.
+
+![CodePulse Student Classroom](screenshots/student-classroom.png)
+
 🔮 Future Improvements
 - Multi-language coding support
 - Secure code execution sandbox
