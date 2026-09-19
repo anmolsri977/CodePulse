@@ -149,6 +149,20 @@ CodePulse/
 ├── pom.xml
 └── README.md
 
+## 📸 Screenshots
+
+### Live Coding Classroom
+
+Teachers can broadcast code changes to connected students in real time using WebSocket/STOMP.
+
+![CodePulse Live Coding Classroom](screenshots/live-classroom.png)
+
+### Challenges & Live Submissions
+
+Teachers can create timed coding challenges and monitor student submissions in real time.
+
+![CodePulse Challenges and Submissions](screenshots/challenges-submissions.png)
+
 🔮 Future Improvements
 - Multi-language coding support
 - Secure code execution sandbox
