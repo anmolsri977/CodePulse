@@ -4,7 +4,7 @@ import Editor from '@monaco-editor/react';
 import { Client } from '@stomp/stompjs';
 import { useAuth } from '../hooks/useAuth';
 import { getToken } from '../utils/auth';
-import api from '../services/api';
+import api, { getWsUrl } from '../services/api';
 import CreateChallengeForm from '../components/CreateChallengeForm';
 import ChallengeCard from '../components/ChallengeCard';
 import AiReviewResult from '../components/AiReviewResult';
@@ -95,7 +95,7 @@ const RoomPage = () => {
   // WebSocket / STOMP Lifecycle (Reused single client)
   useEffect(() => {
     const token = getToken();
-    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws';
+    const wsUrl = getWsUrl();
     const normalizedRoomCode = (roomCode || '').trim().toUpperCase();
 
     setConnectionStatus('connecting');
