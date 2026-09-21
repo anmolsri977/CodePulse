@@ -373,7 +373,9 @@ GEMINI_MODEL=gemini-3.6-flash
 
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 
-WS_ALLOWED_ORIGINS=http://localhost:5173
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+WS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost:8080
 ```
 
 The application uses environment variables so database credentials, JWT secrets, and Gemini API keys are not hardcoded into the source code.

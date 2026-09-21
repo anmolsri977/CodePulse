@@ -23,6 +23,8 @@ import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 
 import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -32,8 +34,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
 
-    @Value("${websocket.allowed-origins:http://localhost:3000,http://localhost:5173,http://localhost:8080}")
+    @Value("${websocket.allowed-origins:${WS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://localhost:8080}}")
     private String allowedOrigins;
+
+    @Value("${cors.allowed-origins:${CORS_ALLOWED_ORIGINS:}}")
+    private String corsAllowedOrigins;
 
     public WebSocketConfig(JwtService jwtService, UserDetailsService userDetailsService) {
         this.jwtService = jwtService;
@@ -42,10 +47,25 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        String[] origins = Arrays.stream(allowedOrigins.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toArray(String[]::new);
+        Set<String> originSet = new LinkedHashSet<>();
+
+        if (allowedOrigins != null && !allowedOrigins.isBlank()) {
+            Arrays.stream(allowedOrigins.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(s -> s.endsWith("/") ? s.substring(0, s.length() - 1) : s)
+                    .forEach(originSet::add);
+        }
+
+        if (corsAllowedOrigins != null && !corsAllowedOrigins.isBlank()) {
+            Arrays.stream(corsAllowedOrigins.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(s -> s.endsWith("/") ? s.substring(0, s.length() - 1) : s)
+                    .forEach(originSet::add);
+        }
+
+        String[] origins = originSet.toArray(String[]::new);
 
         registry.addEndpoint("/ws")
                 .setAllowedOrigins(origins);
