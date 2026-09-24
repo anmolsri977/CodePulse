@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 @Service
 public class SubmissionService {
@@ -60,11 +61,16 @@ public class SubmissionService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot submit code to a closed room challenge");
         }
 
+        // Enforce challenge manual termination
+        if (challenge.getEndedAt() != null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Challenge has been ended by the teacher. Submissions are closed.");
+        }
+
         // Enforce challenge deadline if started and timeLimit is set
         if (challenge.getStartedAt() != null && challenge.getTimeLimit() != null && challenge.getTimeLimit() > 0) {
             LocalDateTime deadline = challenge.getStartedAt().plusMinutes(challenge.getTimeLimit());
             // Allow 10-second grace period for network transmission latency
-            if (LocalDateTime.now().isAfter(deadline.plusSeconds(10))) {
+            if (LocalDateTime.now(ZoneOffset.UTC).isAfter(deadline.plusSeconds(10))) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Challenge time limit has expired. Submissions are closed.");
             }
         }

@@ -1,6 +1,7 @@
 package com.codepulse.dto;
 
 import com.codepulse.entity.Submission;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -17,6 +18,8 @@ public class SubmissionResponse {
     private Long id;
     private Integer score;
     private String feedback;
+
+    @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
     private LocalDateTime submittedAt;
     private Long challengeId;
 

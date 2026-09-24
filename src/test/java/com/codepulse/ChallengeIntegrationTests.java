@@ -35,6 +35,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
 import java.lang.reflect.Type;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
@@ -46,6 +47,8 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -70,6 +73,9 @@ public class ChallengeIntegrationTests {
 
     @Autowired
     private ChallengeRepository challengeRepository;
+
+    @Autowired
+    private com.codepulse.service.ChallengeService challengeService;
 
     @Autowired
     private com.codepulse.repository.SubmissionRepository submissionRepository;
@@ -391,5 +397,296 @@ public class ChallengeIntegrationTests {
                 .andReturn();
 
         return objectMapper.readValue(result.getResponse().getContentAsString(), ChallengeResponse.class);
+    }
+
+    @Test
+    @DisplayName("7. New challenge starts with fresh startedAt and serializes with explicit UTC Z indicator")
+    void testNewChallengeStartsAndSerializesExplicitUtc() throws Exception {
+        // Teacher creates challenge
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Merge Sort", 20);
+        assertNull(created.getStartedAt(), "startedAt should be null upon initial creation");
+
+        // Teacher starts the challenge
+        ChallengeResponse broadcast = challengeService.getChallengeForBroadcast(
+                "quirrell@codepulse.com",
+                roomCode1,
+                created.getId()
+        );
+
+        assertNotNull(broadcast.getStartedAt(), "startedAt must be populated when challenge is started");
+        assertNotNull(broadcast.getCreatedAt(), "createdAt must be present");
+
+        // Verify JSON serialization produces explicit UTC 'Z' suffix
+        String json = objectMapper.writeValueAsString(broadcast);
+        assertTrue(json.contains("\"startedAt\":"), "JSON must contain startedAt field");
+        assertTrue(json.matches(".*\"startedAt\"\\s*:\\s*\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z\".*"),
+                "startedAt JSON must explicitly end with UTC 'Z' indicator: " + json);
+        assertTrue(json.matches(".*\"createdAt\"\\s*:\\s*\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z\".*"),
+                "createdAt JSON must explicitly end with UTC 'Z' indicator: " + json);
+    }
+
+    @Test
+    @DisplayName("8. Expired challenge restarted by teacher receives a new startedAt")
+    void testExpiredChallengeRestartedByTeacherReceivesNewStartedAt() throws Exception {
+        // Teacher creates challenge with 10 minute time limit
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Dijkstra Algorithm", 10);
+
+        // Manually simulate that this challenge was started 40 minutes ago (expired)
+        LocalDateTime oldStartedAt = LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(40).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Challenge challengeEntity = challengeRepository.findById(created.getId()).orElseThrow();
+        challengeEntity.setStartedAt(oldStartedAt);
+        challengeRepository.save(challengeEntity);
+
+        // Teacher restarts/broadcasts the challenge again
+        ChallengeResponse restarted = challengeService.getChallengeForBroadcast(
+                "quirrell@codepulse.com",
+                roomCode1,
+                created.getId()
+        );
+
+        assertNotNull(restarted.getStartedAt());
+        assertTrue(restarted.getStartedAt().isAfter(oldStartedAt.plusMinutes(10)),
+                "Restarted challenge must receive a brand new startedAt later than the expired deadline");
+
+        // Verify updated startedAt is persisted in repository
+        Challenge reloaded = challengeRepository.findById(created.getId()).orElseThrow();
+        assertTrue(reloaded.getStartedAt().isAfter(oldStartedAt.plusMinutes(10)),
+                "Persisted entity must also have the new startedAt");
+    }
+
+    @Test
+    @DisplayName("9. Non-expired active challenge does not unexpectedly reset its startedAt on re-broadcast")
+    void testNonExpiredChallengeDoesNotResetStartedAt() throws Exception {
+        // Teacher creates challenge with 30 minute time limit
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Graph BFS", 30);
+
+        // Simulate challenge started 5 minutes ago (still 25 minutes remaining, not expired)
+        LocalDateTime existingStartedAt = LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(5).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Challenge challengeEntity = challengeRepository.findById(created.getId()).orElseThrow();
+        challengeEntity.setStartedAt(existingStartedAt);
+        challengeRepository.save(challengeEntity);
+
+        // Teacher re-broadcasts the challenge to inform late-joining students
+        ChallengeResponse rebroadcast = challengeService.getChallengeForBroadcast(
+                "quirrell@codepulse.com",
+                roomCode1,
+                created.getId()
+        );
+
+        assertEquals(existingStartedAt, rebroadcast.getStartedAt(),
+                "Non-expired challenge must preserve its existing startedAt upon re-broadcast");
+    }
+
+    @Test
+    @DisplayName("10. 2-minute challenge under IST JVM timezone calculates ~120s remaining, not 332 minutes")
+    void testTwoMinuteChallengeUnderIstJvmTimezone() throws Exception {
+        java.util.TimeZone originalJvmTz = java.util.TimeZone.getDefault();
+        try {
+            // Explicitly set JVM timezone to Asia/Kolkata (IST = UTC+05:30)
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+
+            ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Quick Sort", 2);
+            ChallengeResponse broadcast = challengeService.getChallengeForBroadcast(
+                    "quirrell@codepulse.com",
+                    roomCode1,
+                    created.getId()
+            );
+
+            assertNotNull(broadcast.getStartedAt());
+            assertEquals(2, broadcast.getTimeLimit());
+
+            // Serialize to JSON and parse as UTC Instant
+            String json = objectMapper.writeValueAsString(broadcast);
+            assertTrue(json.contains("\"startedAt\":"));
+
+            // Parse startedAt as UTC Instant
+            java.time.Instant startedAtInstant = broadcast.getStartedAt().toInstant(java.time.ZoneOffset.UTC);
+            long nowEpochMilli = java.time.Instant.now().toEpochMilli();
+            long deadlineEpochMilli = startedAtInstant.toEpochMilli() + (2 * 60 * 1000L);
+            long remainingSeconds = (deadlineEpochMilli - nowEpochMilli) / 1000L;
+
+            // Must be within ~115 to 120 seconds, definitely NOT 330+ minutes (~19920 seconds)
+            assertTrue(remainingSeconds >= 115 && remainingSeconds <= 120,
+                    "Remaining seconds must be ~120s, but was: " + remainingSeconds + " (should not have +5h30m offset)");
+
+            // Verify backend expiry logic also evaluates active
+            LocalDateTime nowUtc = LocalDateTime.now(java.time.ZoneOffset.UTC);
+            boolean isExpired = nowUtc.isAfter(broadcast.getStartedAt().plusMinutes(broadcast.getTimeLimit()));
+            org.junit.jupiter.api.Assertions.assertFalse(isExpired, "2-minute challenge just started should NOT be expired");
+        } finally {
+            java.util.TimeZone.setDefault(originalJvmTz);
+        }
+    }
+
+    @Test
+    @DisplayName("11. Teacher ends active challenge successfully via PATCH /api/challenges/{id}/end")
+    void testTeacherEndsChallengeSuccessfully() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Binary Search", 15);
+        challengeService.getChallengeForBroadcast("quirrell@codepulse.com", roomCode1, created.getId());
+
+        MvcResult result = mockMvc.perform(patch("/api/challenges/" + created.getId() + "/end")
+                        .header("Authorization", "Bearer " + teacherToken1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(created.getId()))
+                .andExpect(jsonPath("$.endedAt").isNotEmpty())
+                .andReturn();
+
+        ChallengeResponse endedResponse = objectMapper.readValue(result.getResponse().getContentAsString(), ChallengeResponse.class);
+        assertNotNull(endedResponse.getEndedAt());
+
+        // Verify persisted entity has endedAt set
+        Challenge reloaded = challengeRepository.findById(created.getId()).orElseThrow();
+        assertNotNull(reloaded.getEndedAt());
+    }
+
+    @Test
+    @DisplayName("12. Student cannot end challenge (403 Forbidden)")
+    void testStudentCannotEndChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Stack Implementation", 15);
+
+        mockMvc.perform(patch("/api/challenges/" + created.getId() + "/end")
+                        .header("Authorization", "Bearer " + studentToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("13. Teacher cannot end challenge in another teacher's room (403 Forbidden)")
+    void testTeacherCannotEndAnotherTeacherChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Queue Implementation", 15);
+
+        // Teacher 2 tries to end Teacher 1's challenge
+        mockMvc.perform(patch("/api/challenges/" + created.getId() + "/end")
+                        .header("Authorization", "Bearer " + teacherToken2))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("14. Teacher restarting an ended challenge resets endedAt and sets new startedAt")
+    void testRestartingEndedChallengeResetsEndedAt() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Heap Sort", 10);
+        challengeService.getChallengeForBroadcast("quirrell@codepulse.com", roomCode1, created.getId());
+
+        // End the challenge
+        challengeService.endChallenge("quirrell@codepulse.com", created.getId());
+        Challenge endedEntity = challengeRepository.findById(created.getId()).orElseThrow();
+        assertNotNull(endedEntity.getEndedAt());
+
+        // Restart the challenge
+        ChallengeResponse restarted = challengeService.getChallengeForBroadcast("quirrell@codepulse.com", roomCode1, created.getId());
+        assertNull(restarted.getEndedAt(), "restarted challenge must have null endedAt");
+        assertNotNull(restarted.getStartedAt(), "restarted challenge must have fresh startedAt");
+
+        Challenge reloaded = challengeRepository.findById(created.getId()).orElseThrow();
+        assertNull(reloaded.getEndedAt(), "persisted entity must have null endedAt");
+    }
+
+    @Test
+    @DisplayName("15. Teacher can delete own ended challenge")
+    void testTeacherCanDeleteEndedChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Bubble Sort", 10);
+        challengeService.getChallengeForBroadcast("quirrell@codepulse.com", roomCode1, created.getId());
+        challengeService.endChallenge("quirrell@codepulse.com", created.getId());
+
+        mockMvc.perform(delete("/api/challenges/" + created.getId())
+                        .header("Authorization", "Bearer " + teacherToken1))
+                .andExpect(status().isNoContent());
+
+        assertTrue(challengeRepository.findById(created.getId()).isEmpty(), "Challenge must be deleted from repository");
+    }
+
+    @Test
+    @DisplayName("16. Teacher can delete own expired challenge")
+    void testTeacherCanDeleteExpiredChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Insertion Sort", 10);
+        Challenge challengeEntity = challengeRepository.findById(created.getId()).orElseThrow();
+        challengeEntity.setStartedAt(LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(25));
+        challengeRepository.save(challengeEntity);
+
+        mockMvc.perform(delete("/api/challenges/" + created.getId())
+                        .header("Authorization", "Bearer " + teacherToken1))
+                .andExpect(status().isNoContent());
+
+        assertTrue(challengeRepository.findById(created.getId()).isEmpty(), "Expired challenge must be deleted");
+    }
+
+    @Test
+    @DisplayName("17. Teacher cannot delete active challenge (400 Bad Request)")
+    void testTeacherCannotDeleteActiveChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Active QuickSort", 30);
+        // Start challenge (active)
+        challengeService.getChallengeForBroadcast("quirrell@codepulse.com", roomCode1, created.getId());
+
+        mockMvc.perform(delete("/api/challenges/" + created.getId())
+                        .header("Authorization", "Bearer " + teacherToken1))
+                .andExpect(status().isBadRequest());
+
+        assertTrue(challengeRepository.findById(created.getId()).isPresent(), "Active challenge must NOT be deleted");
+    }
+
+    @Test
+    @DisplayName("18. Student receives 403 Forbidden when attempting to delete challenge")
+    void testStudentCannotDeleteChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Radix Sort", 10);
+        challengeService.endChallenge("quirrell@codepulse.com", created.getId());
+
+        mockMvc.perform(delete("/api/challenges/" + created.getId())
+                        .header("Authorization", "Bearer " + studentToken))
+                .andExpect(status().isForbidden());
+
+        assertTrue(challengeRepository.findById(created.getId()).isPresent(), "Challenge must still exist");
+    }
+
+    @Test
+    @DisplayName("19. Teacher cannot delete another teacher's challenge (403 Forbidden)")
+    void testTeacherCannotDeleteAnotherTeacherChallenge() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Counting Sort", 10);
+        challengeService.endChallenge("quirrell@codepulse.com", created.getId());
+
+        // Teacher 2 attempts to delete Teacher 1's challenge
+        mockMvc.perform(delete("/api/challenges/" + created.getId())
+                        .header("Authorization", "Bearer " + teacherToken2))
+                .andExpect(status().isForbidden());
+
+        assertTrue(challengeRepository.findById(created.getId()).isPresent(), "Challenge must still exist");
+    }
+
+    @Test
+    @DisplayName("20. Associated submissions handled safely on challenge delete and challenge removed from list")
+    void testSubmissionsDeletedWithChallengeAndChallengeListUpdated() throws Exception {
+        ChallengeResponse created = createChallenge(teacherToken1, roomCode1, "Bucket Sort", 10);
+        challengeService.getChallengeForBroadcast("quirrell@codepulse.com", roomCode1, created.getId());
+
+        // Submit code as student Neville
+        var studentUser = userRepository.findByEmail("neville@codepulse.com").orElseThrow();
+        Challenge challengeEntity = challengeRepository.findById(created.getId()).orElseThrow();
+        com.codepulse.entity.Submission submission = com.codepulse.entity.Submission.builder()
+                .code("class Solution {}")
+                .challenge(challengeEntity)
+                .student(studentUser)
+                .score(85)
+                .aiFeedback("Good job")
+                .build();
+        submissionRepository.save(submission);
+
+        assertEquals(1, submissionRepository.findByChallengeId(created.getId()).size(), "Precondition: 1 submission exists");
+
+        // Teacher ends challenge
+        challengeService.endChallenge("quirrell@codepulse.com", created.getId());
+
+        // Delete the challenge
+        mockMvc.perform(delete("/api/challenges/" + created.getId())
+                        .header("Authorization", "Bearer " + teacherToken1))
+                .andExpect(status().isNoContent());
+
+        // Verify challenge is deleted
+        assertTrue(challengeRepository.findById(created.getId()).isEmpty());
+        // Verify associated submissions are cleanly deleted without orphan or FK errors
+        assertTrue(submissionRepository.findByChallengeId(created.getId()).isEmpty());
+
+        // Verify challenge no longer appears in getRoomChallenges
+        mockMvc.perform(get("/api/rooms/" + roomCode1 + "/challenges")
+                        .header("Authorization", "Bearer " + teacherToken1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
     }
 }

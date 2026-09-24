@@ -54,7 +54,8 @@ public class GeminiServiceTests {
 
         assertNotNull(result);
         assertNull(result.getScore(), "Score must be null when API key is missing");
-        assertEquals("AI review is currently unavailable. Your code has been saved successfully.", result.getFeedback());
+        assertTrue(result.getFeedback().contains("AI review is currently unavailable"),
+                "Fallback message must indicate AI review is currently unavailable");
     }
 
     @Test
@@ -196,6 +197,7 @@ public class GeminiServiceTests {
         org.springframework.http.HttpEntity capturedEntity = entityCaptor.getValue();
         assertNotNull(capturedEntity);
         assertEquals(org.springframework.http.MediaType.APPLICATION_JSON, capturedEntity.getHeaders().getContentType());
+        assertEquals("dummy-key", capturedEntity.getHeaders().getFirst("x-goog-api-key"));
 
         java.util.Map<String, Object> body = (java.util.Map<String, Object>) capturedEntity.getBody();
         assertNotNull(body);

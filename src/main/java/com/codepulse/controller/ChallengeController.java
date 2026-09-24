@@ -47,4 +47,26 @@ public class ChallengeController {
         List<ChallengeResponse> challenges = challengeService.getRoomChallenges(principal.getName(), roomCode);
         return ResponseEntity.ok(challenges);
     }
+
+    @org.springframework.web.bind.annotation.PatchMapping("/{challengeId}/end")
+    @PreAuthorize("hasRole('TEACHER')")
+    public ResponseEntity<ChallengeResponse> endChallenge(
+            @PathVariable String roomCode,
+            @PathVariable Long challengeId,
+            Principal principal
+    ) {
+        ChallengeResponse response = challengeService.endChallenge(principal.getName(), challengeId);
+        return ResponseEntity.ok(response);
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/{challengeId}")
+    @PreAuthorize("hasRole('TEACHER')")
+    public ResponseEntity<Void> deleteChallenge(
+            @PathVariable String roomCode,
+            @PathVariable Long challengeId,
+            Principal principal
+    ) {
+        challengeService.deleteChallenge(principal.getName(), challengeId);
+        return ResponseEntity.noContent().build();
+    }
 }

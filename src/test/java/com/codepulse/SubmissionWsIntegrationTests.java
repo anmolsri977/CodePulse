@@ -269,7 +269,7 @@ public class SubmissionWsIntegrationTests {
                 .studentName("Impostor")
                 .challengeId(challengeId1)
                 .score(100)
-                .submittedAt(LocalDateTime.now())
+                .submittedAt(LocalDateTime.now(java.time.ZoneOffset.UTC))
                 .build();
 
         try {

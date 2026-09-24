@@ -330,7 +330,7 @@ public class SubmissionIntegrationTests {
     void testSubmissionBeforeDeadlineSucceeds() throws Exception {
         // Set challenge started 5 minutes ago with 20 minute limit (15 mins remaining)
         Challenge challenge = challengeRepository.findById(activeChallengeId).orElseThrow();
-        challenge.setStartedAt(LocalDateTime.now().minusMinutes(5));
+        challenge.setStartedAt(LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(5));
         challenge.setTimeLimit(20);
         challengeRepository.save(challenge);
 
@@ -350,8 +350,29 @@ public class SubmissionIntegrationTests {
     void testSubmissionAfterDeadlineRejected() throws Exception {
         // Set challenge started 30 minutes ago with 20 minute limit (expired 10 mins ago)
         Challenge challenge = challengeRepository.findById(activeChallengeId).orElseThrow();
-        challenge.setStartedAt(LocalDateTime.now().minusMinutes(30));
+        challenge.setStartedAt(LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(30));
         challenge.setTimeLimit(20);
+        challengeRepository.save(challenge);
+
+        SubmitCodeRequest submitRequest = SubmitCodeRequest.builder()
+                .code("public int factorial(int n) { return 1; }")
+                .build();
+
+        mockMvc.perform(post("/api/challenges/" + activeChallengeId + "/submit")
+                        .header("Authorization", "Bearer " + studentToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(submitRequest)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("13. Submission to manually ended challenge is rejected with 400 Bad Request")
+    void testSubmissionToEndedChallengeRejected() throws Exception {
+        // Active challenge, but teacher manually ended it
+        Challenge challenge = challengeRepository.findById(activeChallengeId).orElseThrow();
+        challenge.setStartedAt(LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(2));
+        challenge.setTimeLimit(20);
+        challenge.setEndedAt(LocalDateTime.now(java.time.ZoneOffset.UTC));
         challengeRepository.save(challenge);
 
         SubmitCodeRequest submitRequest = SubmitCodeRequest.builder()

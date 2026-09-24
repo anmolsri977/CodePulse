@@ -19,6 +19,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 @Entity
 @Table(name = "submissions")
@@ -58,7 +59,7 @@ public class Submission {
     @PrePersist
     protected void onCreate() {
         if (this.submittedAt == null) {
-            this.submittedAt = LocalDateTime.now();
+            this.submittedAt = LocalDateTime.now(ZoneOffset.UTC);
         }
     }
 }

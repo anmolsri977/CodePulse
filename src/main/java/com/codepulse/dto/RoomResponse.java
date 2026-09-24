@@ -2,6 +2,7 @@ package com.codepulse.dto;
 
 import com.codepulse.entity.Room;
 import com.codepulse.entity.RoomStatus;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -21,6 +22,8 @@ public class RoomResponse {
     private RoomStatus status;
     private String teacherName;
     private String teacherEmail;
+
+    @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
     private LocalDateTime createdAt;
 
     public static RoomResponse fromEntity(Room room) {

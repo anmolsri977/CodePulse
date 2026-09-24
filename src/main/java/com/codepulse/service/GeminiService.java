@@ -43,7 +43,13 @@ public class GeminiService {
 
     @jakarta.annotation.PostConstruct
     public void init() {
-        logger.info("GeminiService initialized with model: '{}', baseUrl: '{}'", model, baseUrl);
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            logger.warn("GeminiService initialized WITHOUT GEMINI_API_KEY. AI code review will return fallback messages until the GEMINI_API_KEY environment variable is configured. Model: '{}', BaseUrl: '{}'",
+                    model, baseUrl);
+        } else {
+            logger.info("GeminiService initialized with GEMINI_API_KEY configured. Model: '{}', BaseUrl: '{}'",
+                    model, baseUrl);
+        }
     }
 
     public String getModel() {
@@ -56,12 +62,11 @@ public class GeminiService {
 
     public GeminiReviewResult reviewCode(String challengeTitle, String challengeDescription, String studentCode) {
         if (apiKey == null || apiKey.trim().isEmpty()) {
-            logger.warn("GEMINI_API_KEY environment variable is not configured. Returning fallback feedback.");
-            return new GeminiReviewResult(null, DEFAULT_FALLBACK_FEEDBACK);
+            logger.warn("GEMINI_API_KEY environment variable is not configured on this server. Returning fallback feedback.");
+            return new GeminiReviewResult(null, "AI review is currently unavailable (GEMINI_API_KEY not configured on server). Your code has been saved successfully.");
         }
 
-        String endpointPath = String.format("%s/models/%s:generateContent", baseUrl, model);
-        String requestUrl = String.format("%s?key=%s", endpointPath, apiKey);
+        String requestUrl = String.format("%s/models/%s:generateContent", baseUrl, model);
 
         int maxAttempts = 3;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -71,6 +76,7 @@ public class GeminiService {
 
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_JSON);
+                headers.set("x-goog-api-key", apiKey.trim());
                 HttpEntity<Map<String, Object>> requestEntity = new HttpEntity<>(requestBody, headers);
 
                 ResponseEntity<String> response = restTemplate.postForEntity(requestUrl, requestEntity, String.class);
@@ -87,11 +93,11 @@ public class GeminiService {
                     }
                     continue;
                 }
-                return handleHttpException(e, endpointPath);
+                return handleHttpException(e, requestUrl);
             } catch (org.springframework.web.client.HttpStatusCodeException e) {
-                return handleHttpException(e, endpointPath);
+                return handleHttpException(e, requestUrl);
             } catch (Exception e) {
-                return handleGenericException(e, endpointPath);
+                return handleGenericException(e, requestUrl);
             }
         }
         return new GeminiReviewResult(null, DEFAULT_FALLBACK_FEEDBACK);

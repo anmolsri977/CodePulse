@@ -4,6 +4,7 @@ import Editor from '@monaco-editor/react';
 import { Client } from '@stomp/stompjs';
 import { useAuth } from '../hooks/useAuth';
 import { getToken } from '../utils/auth';
+import { calculateRemainingSeconds, formatCountdown } from '../utils/timer';
 import api, { getWsUrl } from '../services/api';
 import CreateChallengeForm from '../components/CreateChallengeForm';
 import ChallengeCard from '../components/ChallengeCard';
@@ -27,45 +28,47 @@ const RoomPage = () => {
 
   // Challenge live countdown timer
   useEffect(() => {
-    if (!currentChallenge?.startedAt || !currentChallenge?.timeLimit) {
+    if (!currentChallenge?.startedAt || !currentChallenge?.timeLimit || currentChallenge?.endedAt) {
       setRemainingSeconds(null);
       return;
     }
 
-    const calculateRemaining = () => {
-      const startTime = new Date(currentChallenge.startedAt).getTime();
-      const durationMs = Number(currentChallenge.timeLimit) * 60 * 1000;
-      const expiresAt = startTime + durationMs;
-      const diffSec = Math.floor((expiresAt - Date.now()) / 1000);
-      return Math.max(0, diffSec);
+    const updateRemaining = () => {
+      return calculateRemainingSeconds(currentChallenge.startedAt, currentChallenge.timeLimit);
     };
 
-    setRemainingSeconds(calculateRemaining());
+    setRemainingSeconds(updateRemaining());
 
     const interval = setInterval(() => {
-      const remaining = calculateRemaining();
+      const remaining = updateRemaining();
       setRemainingSeconds(remaining);
-      if (remaining <= 0) {
+      if (remaining !== null && remaining <= 0) {
         clearInterval(interval);
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [currentChallenge?.startedAt, currentChallenge?.timeLimit]);
+  }, [currentChallenge?.startedAt, currentChallenge?.timeLimit, currentChallenge?.endedAt]);
 
-  const isChallengeExpired = remainingSeconds !== null && remainingSeconds <= 0;
-
-  const formatCountdown = (totalSeconds) => {
-    if (totalSeconds === null || totalSeconds === undefined) return '';
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  };
+  const isChallengeEnded = Boolean(currentChallenge?.endedAt);
+  const isChallengeExpired = !isChallengeEnded && remainingSeconds !== null && remainingSeconds <= 0;
 
   // Teacher-specific challenge & submission management
   const [challenges, setChallenges] = useState([]);
   const [activeChallengeId, setActiveChallengeId] = useState(null);
   const [submissions, setSubmissions] = useState([]);
+
+  // Student challenge editor anti-copy/paste warning state
+  const [clipboardWarning, setClipboardWarning] = useState(false);
+  const warningTimeoutRef = useRef(null);
+
+  const triggerClipboardWarning = () => {
+    setClipboardWarning(true);
+    if (warningTimeoutRef.current) clearTimeout(warningTimeoutRef.current);
+    warningTimeoutRef.current = setTimeout(() => {
+      setClipboardWarning(false);
+    }, 2500);
+  };
 
   // Connection & submission status
   const [connectionStatus, setConnectionStatus] = useState('connecting');
@@ -77,13 +80,34 @@ const RoomPage = () => {
   const debounceTimerRef = useRef(null);
   const currentChallengeIdRef = useRef(null);
 
-  // Fetch teacher's room challenges on mount
+  // Fetch room challenges on mount (for both teacher dashboard and student active challenge restoration)
   useEffect(() => {
-    if (isTeacher && roomCode) {
+    if (roomCode) {
       const fetchChallenges = async () => {
         try {
           const res = await api.get(`/rooms/${roomCode}/challenges`);
-          setChallenges(res.data || []);
+          const challengeList = res.data || [];
+          if (isTeacher) {
+            setChallenges(challengeList);
+            const active = challengeList.find(
+              (c) => c.startedAt && !c.endedAt && calculateRemainingSeconds(c.startedAt, c.timeLimit) > 0
+            );
+            if (active) {
+              setActiveChallengeId(active.id);
+            }
+          } else {
+            // Student: find active challenge if room already has one running
+            const active = challengeList.find(
+              (c) => c.startedAt && !c.endedAt && calculateRemainingSeconds(c.startedAt, c.timeLimit) > 0
+            );
+            if (active) {
+              setCurrentChallenge(active);
+              if (currentChallengeIdRef.current !== active.id) {
+                currentChallengeIdRef.current = active.id;
+                setStudentSolution(active.skeleton || '// Write your solution here...\n');
+              }
+            }
+          }
         } catch (err) {
           console.error('Failed to load challenges for room', err);
         }
@@ -149,6 +173,11 @@ const RoomPage = () => {
               const broadcastChallenge = JSON.parse(message.body);
               if (broadcastChallenge && broadcastChallenge.id) {
                 setCurrentChallenge(broadcastChallenge);
+
+                // If challenge was ended, keep student code intact
+                if (broadcastChallenge.endedAt) {
+                  return;
+                }
 
                 // Constraint 3 & 4:
                 // Only reset studentSolution if this is a genuinely new challenge.
@@ -234,6 +263,55 @@ const RoomPage = () => {
     }
   };
 
+  // Teacher manually ends a challenge via REST
+  const handleEndChallenge = async (challengeId) => {
+    try {
+      const response = await api.patch(`/challenges/${challengeId}/end`);
+      // Update local challenges list for teacher
+      setChallenges((prev) =>
+        prev.map((c) => (c.id === challengeId ? { ...c, ...response.data } : c))
+      );
+      if (activeChallengeId === challengeId) {
+        setActiveChallengeId(null);
+      }
+    } catch (err) {
+      console.error('Failed to end challenge', err);
+      let msg = 'Failed to end challenge. Please try again.';
+      if (err.response?.data) {
+        const data = err.response.data;
+        if (typeof data === 'string') msg = data;
+        else if (data.message) msg = data.message;
+        else if (data.error) msg = data.error;
+      }
+      alert(msg);
+    }
+  };
+
+  // Teacher deletes a challenge via REST
+  const handleDeleteChallenge = async (challengeId) => {
+    try {
+      await api.delete(`/challenges/${challengeId}`);
+      // Remove challenge immediately without page refresh
+      setChallenges((prev) => prev.filter((c) => c.id !== challengeId));
+      if (activeChallengeId === challengeId) {
+        setActiveChallengeId(null);
+      }
+      if (currentChallenge?.id === challengeId) {
+        setCurrentChallenge(null);
+      }
+    } catch (err) {
+      console.error('Failed to delete challenge', err);
+      let msg = 'Failed to delete challenge. Please try again.';
+      if (err.response?.data) {
+        const data = err.response.data;
+        if (typeof data === 'string') msg = data;
+        else if (data.message) msg = data.message;
+        else if (data.error) msg = data.error;
+      }
+      alert(msg);
+    }
+  };
+
   const handleChallengeCreated = (newChallenge) => {
     setChallenges((prev) => [newChallenge, ...prev]);
   };
@@ -241,6 +319,11 @@ const RoomPage = () => {
   // Student submits solution via REST
   const handleSubmitSolution = async () => {
     if (!currentChallenge?.id || !studentSolution.trim()) return;
+
+    if (isChallengeEnded) {
+      setSubmitError('Challenge has been ended by the teacher. Submissions are closed.');
+      return;
+    }
 
     if (isChallengeExpired) {
       setSubmitError('Challenge time limit has expired. Submissions are closed.');
@@ -405,8 +488,10 @@ const RoomPage = () => {
                     <ChallengeCard
                       key={ch.id}
                       challenge={ch}
-                      isActive={activeChallengeId === ch.id}
+                      isActive={activeChallengeId === ch.id || (ch.startedAt && !ch.endedAt && calculateRemainingSeconds(ch.startedAt, ch.timeLimit) > 0)}
                       onStartChallenge={handleStartChallenge}
+                      onEndChallenge={handleEndChallenge}
+                      onDeleteChallenge={handleDeleteChallenge}
                     />
                   ))}
                 </div>
@@ -467,7 +552,9 @@ const RoomPage = () => {
             <div className="active-challenge-banner">
               <div className="active-challenge-header">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  <span className="badge" style={{ margin: 0 }}>ACTIVE CHALLENGE</span>
+                  <span className="badge" style={{ margin: 0, ...(isChallengeEnded ? { background: '#ef4444' } : {}) }}>
+                    {isChallengeEnded ? 'CHALLENGE ENDED' : 'ACTIVE CHALLENGE'}
+                  </span>
                   <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                     {currentChallenge.title}
                   </h2>
@@ -478,20 +565,26 @@ const RoomPage = () => {
                     style={{
                       fontSize: '0.85rem',
                       fontWeight: 600,
-                      background: isChallengeExpired
+                      background: isChallengeEnded
+                        ? 'rgba(239, 68, 68, 0.2)'
+                        : isChallengeExpired
                         ? 'rgba(239, 68, 68, 0.2)'
                         : remainingSeconds !== null && remainingSeconds < 60
                         ? 'rgba(245, 158, 11, 0.2)'
                         : 'rgba(99, 102, 241, 0.15)',
-                      color: isChallengeExpired
+                      color: isChallengeEnded
+                        ? '#ef4444'
+                        : isChallengeExpired
                         ? '#ef4444'
                         : remainingSeconds !== null && remainingSeconds < 60
                         ? '#f59e0b'
                         : '#818cf8',
-                      border: isChallengeExpired ? '1px solid rgba(239, 68, 68, 0.4)' : undefined,
+                      border: isChallengeEnded || isChallengeExpired ? '1px solid rgba(239, 68, 68, 0.4)' : undefined,
                     }}
                   >
-                    {isChallengeExpired ? (
+                    {isChallengeEnded ? (
+                      <>⏹ Challenge Ended</>
+                    ) : isChallengeExpired ? (
                       <>⏱ 00:00 (Time Expired)</>
                     ) : remainingSeconds !== null ? (
                       <>⏱ {formatCountdown(remainingSeconds)} remaining</>
@@ -520,6 +613,14 @@ const RoomPage = () => {
             </div>
           )}
 
+          {/* Manually Ended Challenge Warning Banner */}
+          {currentChallenge && isChallengeEnded && (
+            <div className="alert alert-error" style={{ marginBottom: '0.75rem', background: 'rgba(239, 68, 68, 0.15)', borderColor: 'rgba(239, 68, 68, 0.4)' }}>
+              <span>⏹</span>
+              <span>Challenge ended by teacher. Submissions are now closed.</span>
+            </div>
+          )}
+
           {/* Expired Challenge Warning Banner */}
           {currentChallenge && isChallengeExpired && (
             <div className="alert alert-error" style={{ marginBottom: '0.75rem' }}>
@@ -543,16 +644,42 @@ const RoomPage = () => {
                     type="button"
                     className="btn btn-primary btn-sm"
                     onClick={handleSubmitSolution}
-                    disabled={submitting || !studentSolution.trim() || isChallengeExpired}
+                    disabled={submitting || !studentSolution.trim() || isChallengeExpired || isChallengeEnded}
                     style={{
                       padding: '0.4rem 1.25rem',
-                      ...(isChallengeExpired ? { opacity: 0.6, cursor: 'not-allowed', background: '#475569' } : {}),
+                      ...(isChallengeExpired || isChallengeEnded ? { opacity: 0.6, cursor: 'not-allowed', background: '#475569' } : {}),
                     }}
                   >
-                    {submitting ? '⚡ Evaluating with AI...' : isChallengeExpired ? '⏱ Time Expired' : '🚀 Submit Solution'}
+                    {submitting
+                      ? '⚡ Evaluating with AI...'
+                      : isChallengeEnded
+                      ? '⏹ Challenge Ended'
+                      : isChallengeExpired
+                      ? '⏱ Time Expired'
+                      : '🚀 Submit Solution'}
                   </button>
                 </div>
               </div>
+
+              {clipboardWarning && (
+                <div
+                  style={{
+                    fontSize: '0.8rem',
+                    color: '#f59e0b',
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                    borderRadius: '4px',
+                    padding: '0.35rem 0.75rem',
+                    margin: '0.5rem 0.75rem 0 0.75rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                  }}
+                >
+                  <span>⚠️</span>
+                  <span>Copy/paste is disabled during coding challenges.</span>
+                </div>
+              )}
 
               <Editor
                 height="48vh"
@@ -561,8 +688,57 @@ const RoomPage = () => {
                 theme="vs-dark"
                 value={studentSolution}
                 onChange={(val) => setStudentSolution(val || '')}
+                onMount={(editor, monaco) => {
+                  // Block keyboard shortcuts: Ctrl+C, Ctrl+V, Ctrl+X, Cmd+C, Cmd+V, Cmd+X
+                  editor.onKeyDown((e) => {
+                    const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+                    const key = e.browserEvent?.key?.toLowerCase();
+                    const isClipboardAction =
+                      e.keyCode === monaco.KeyCode.KeyC ||
+                      e.keyCode === monaco.KeyCode.KeyV ||
+                      e.keyCode === monaco.KeyCode.KeyX ||
+                      key === 'c' ||
+                      key === 'v' ||
+                      key === 'x';
+
+                    if (isCtrlOrMeta && isClipboardAction) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      triggerClipboardWarning();
+                    }
+                  });
+
+                  // Override Monaco built-in clipboard commands
+                  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => {
+                    triggerClipboardWarning();
+                  });
+                  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => {
+                    triggerClipboardWarning();
+                  });
+                  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, () => {
+                    triggerClipboardWarning();
+                  });
+
+                  // DOM-level event interceptors for paste, copy, cut, drop, contextmenu
+                  const domNode = editor.getDomNode();
+                  if (domNode) {
+                    const blockClipboard = (evt) => {
+                      evt.preventDefault();
+                      evt.stopPropagation();
+                      triggerClipboardWarning();
+                    };
+
+                    domNode.addEventListener('paste', blockClipboard, true);
+                    domNode.addEventListener('copy', blockClipboard, true);
+                    domNode.addEventListener('cut', blockClipboard, true);
+                    domNode.addEventListener('drop', blockClipboard, true);
+                    domNode.addEventListener('contextmenu', (evt) => {
+                      evt.preventDefault();
+                    }, true);
+                  }
+                }}
                 options={{
-                  readOnly: false,
+                  readOnly: isChallengeEnded || isChallengeExpired,
                   fontSize: 14,
                   fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
                   minimap: { enabled: false },
@@ -571,6 +747,8 @@ const RoomPage = () => {
                   tabSize: 4,
                   wordWrap: 'on',
                   lineNumbers: 'on',
+                  contextmenu: false,
+                  dragAndDrop: false,
                   padding: { top: 12, bottom: 12 },
                 }}
                 loading={<div style={{ padding: '2rem', color: 'var(--text-muted)' }}>Loading Solution Editor...</div>}
